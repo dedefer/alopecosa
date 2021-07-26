@@ -1,6 +1,6 @@
 use num_derive::{FromPrimitive, ToPrimitive};
 
-const ERROR_BITMASK: isize = 1 << 15;
+pub const ERROR_BITMASK: isize = 1 << 15;
 
 #[derive(
   Debug, Clone, Copy,
@@ -249,7 +249,7 @@ impl Default for Code {
   PartialEq, Eq,
   FromPrimitive, ToPrimitive,
 )]
-pub enum Request {
+pub enum RequestType {
   Select          = 0x01,
   Insert          = 0x02,
   Replace         = 0x03,
@@ -275,7 +275,7 @@ pub enum Request {
 }
 
 #[derive(
-  Debug, Clone, Copy,
+  Debug, Clone, Copy, Hash,
   PartialEq, Eq,
   FromPrimitive, ToPrimitive,
 )]
@@ -321,4 +321,22 @@ pub enum Field {
   IDFilter      = 0x51,
   Error         = 0x52,
   Term          = 0x53,
+}
+
+#[derive(
+  Debug, Clone, Copy,
+  PartialEq, Eq,
+  FromPrimitive, ToPrimitive,
+)]
+pub enum Iterator {
+  Eq            = 0,
+	Req           = 1,
+	All           = 2,
+	Lt            = 3,
+	Le            = 4,
+	Ge            = 5,
+	Gt            = 6,
+	BitsAllSet    = 7,
+	BitsAnySet    = 8,
+	BitsAllNotSet = 9,
 }
