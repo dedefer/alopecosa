@@ -2,10 +2,17 @@ use std::io::Write;
 
 use super::{constants::{Field, RequestType, Iterator}, types::Error};
 use num_traits::ToPrimitive;
-use rmp::encode::{write_array_len, write_map_len, write_str, write_uint};
+use rmp::encode::{write_array_len, write_map_len, write_str, write_str_len, write_uint};
 
 pub trait Pack {
   fn pack(&self) -> Result<Vec<u8>, Error>;
+}
+
+pub fn auth(body: Auth) -> Request {
+  Request {
+    header: Header { request: RequestType::Auth, sync: 0 },
+    body: Box::new(body),
+  }
 }
 
 pub fn select(body: Select) -> Request {
@@ -72,7 +79,7 @@ impl Pack for Header {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Value {
   Int(i64), UInt(u64),
   F32(f32), F64(f64),
@@ -104,7 +111,7 @@ impl Value {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Select {
   pub space_id: u64,
   pub index_id: u64,
@@ -175,6 +182,35 @@ impl Pack for Call {
     Ok(data)
   }
 }
+
+#[derive(Debug)]
+pub struct Auth {
+  pub user: String,
+  pub scramble: Vec<u8>,
+}
+
+impl Body for Auth {}
+
+impl Pack for Auth {
+  fn pack(&self) -> Result<Vec<u8>, Error> {
+    let mut data: Vec<u8> = Vec::with_capacity(26 + self.user.len());
+    let buf = &mut data;
+
+    write_map_len(buf, 2)?;
+
+    write_uint(buf, Field::UserName.to_u64().unwrap())?;
+    write_str(buf, self.user.as_str())?;
+
+    write_uint(buf, Field::Tuple.to_u64().unwrap())?;
+    write_array_len(buf, 2)?;
+    write_str(buf, "chap-sha1")?;
+    write_str_len(buf, self.scramble.len() as u32)?;
+    data.extend_from_slice(&self.scramble);
+
+    Ok(data)
+  }
+}
+
 
 
 #[cfg(test)]

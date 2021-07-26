@@ -1,16 +1,153 @@
 use std::{collections::HashMap, io::Cursor, net::SocketAddr, str, sync::{Arc, atomic::{AtomicBool, AtomicU64, Ordering}}, time::Duration};
 
+use base64::decode;
 use serde::de::DeserializeOwned;
+use sha1::{Digest, Sha1, digest::FixedOutput};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpSocket, TcpStream, tcp::{OwnedReadHalf, OwnedWriteHalf}}, sync::{Mutex, mpsc, oneshot}};
 
-use crate::iproto::{request::{self, Call, Request, Select}, response::{ErrorBody, Response, TupleBody}, types::Error};
+use crate::iproto::{request::{self, Auth, Call, Request, Select}, response::{ErrorBody, Response, TupleBody}, types::Error};
 
+#[derive(Debug)]
+pub struct Connector {
+  addr: SocketAddr,
+  connect_timeout: Option<tokio::time::Duration>,
+  credentials: Option<(String, String)>,
+}
 
+impl Connector {
+  pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
+    self.connect_timeout = Some(timeout);
+    self
+  }
+
+  pub fn with_auth(mut self, user: String, password: String) -> Self {
+    self.credentials = Some((user, password));
+    self
+  }
+
+  pub async fn connect(self) -> Result<Arc<Connection>, tokio::io::Error> {
+    let stream = self.new_connection().await?;
+
+    let (sender, reader) = mpsc::channel(1000);
+
+    let conn = Arc::new(Connection {
+        connector: self,
+
+        req_chan_sender: sender,
+        req_chan_reader: reader.into(),
+        resp_chans: HashMap::new().into(),
+
+        current_sync: 1.into(),
+        closed: false.into(),
+    });
+
+    let serve_conn = conn.clone();
+
+    tokio::spawn(async move {
+      let mut stream = Some(stream);
+
+      while !serve_conn.closed.load(Ordering::SeqCst) {
+        if let Err(err) = Connection::serve(serve_conn.clone(), stream).await {
+          println!("retrying on error while serving connection: {}", err);
+        }
+        stream = None;
+      }
+    });
+
+    Ok(conn)
+  }
+
+  async fn new_connection(&self) -> Result<TcpStream, std::io::Error> {
+    let sock = match self.addr.is_ipv4() {
+      true => TcpSocket::new_v4(),
+      false => TcpSocket::new_v6(),
+    }?;
+
+    let mut conn: TcpStream = match self.connect_timeout {
+      None => sock.connect(self.addr).await?,
+      Some(timeout) => match tokio::time::timeout(
+        timeout, sock.connect(self.addr)
+      ).await {
+        Ok(Ok(conn)) => conn,
+        Ok(Err(e)) => return Err(e.into()),
+        Err(_) => return Err(std::io::Error::new(
+          std::io::ErrorKind::TimedOut,
+          "connect timeout",
+        )),
+      },
+    };
+
+    let mut start_buf: [u8; 128] = [0; 128];
+
+    conn.read_exact(&mut start_buf).await?;
+
+    if let Some((user, password)) = &self.credentials {
+
+      let salt = match decode(&start_buf[64..(64 + 44)]) {
+        Ok(salt) => salt,
+        Err(_) => Err(std::io::Error::new(
+          std::io::ErrorKind::InvalidData,
+          "bad salt",
+        ))?,
+      };
+
+      let mut buf: Vec<u8> = Vec::new();
+      request::auth(Auth {
+        user: user.clone(),
+        scramble: self.auth_scramble(&salt, password),
+      }).pack(&mut buf)
+        .map_err(|_| std::io::Error::new(
+          std::io::ErrorKind::Other,
+          "auth pack error",
+        ))?;
+
+      conn.write_all(&buf).await?;
+
+      buf.resize(128, 0);
+
+      let readed = conn.read(&mut buf).await?;
+
+      let req = Response::parse(&buf[0..readed])
+        .map_err(|_| std::io::Error::new(
+          std::io::ErrorKind::Other,
+          "auth pack error",
+        ))?;
+
+      if req.header.sync != 0 || req.header.code.is_err() {
+        return Err(std::io::Error::new(
+          std::io::ErrorKind::InvalidInput,
+          "auth error",
+        ));
+      }
+    }
+
+    Ok(conn)
+  }
+
+  fn auth_scramble(&self, salt: &[u8], password: &str) -> Vec<u8> {
+
+    let mut hasher = Sha1::default();
+    Digest::update(&mut hasher, password);
+    let hash1 = hasher.finalize_fixed();
+
+    let mut hasher = Sha1::default();
+    Digest::update(&mut hasher, &hash1[0..20]);
+    let hash2 = hasher.finalize();
+
+    let mut hasher = Sha1::default();
+    Digest::update(&mut hasher, &salt[0..20]);
+    Digest::update(&mut hasher, &hash2[0..20]);
+    let almost_final = hasher.finalize();
+
+    almost_final.iter()
+      .zip(&hash1[0..20])
+      .map(|(&a, &b)| { a ^ b }).collect()
+  }
+}
 
 #[derive(Debug)]
 pub struct Connection {
-  addr: SocketAddr,
-  connect_timeout: Option<tokio::time::Duration>,
+  connector: Connector,
 
   current_sync: AtomicU64,
 
@@ -25,6 +162,13 @@ pub struct Connection {
 }
 
 impl Connection {
+  pub fn new(addr: SocketAddr) -> Connector {
+    Connector {
+      addr, credentials: None,
+      connect_timeout: None,
+    }
+  }
+
   pub async fn make_request(&self, req: Request) -> Response {
     let mut req = req;
     req.header.sync = self.get_sync();
@@ -67,81 +211,10 @@ impl Connection {
     }
   }
 
-  pub fn new(addr: SocketAddr) -> Connection {
-    let (sender, reader) = mpsc::channel(1000);
-
-    let g = LogOnExit("new connection done".into());
-
-    Connection {
-      addr, connect_timeout: None,
-
-      req_chan_sender: sender,
-      req_chan_reader: reader.into(),
-      resp_chans: HashMap::new().into(),
-
-      current_sync: 0.into(),
-      closed: false.into(),
-    }
-  }
-
-  pub fn with_connect_timeout(mut self, timeout: Duration) -> Connection {
-    self.connect_timeout = Some(timeout);
-    self
-  }
-
-  pub async fn connect(self) -> Result<Arc<Connection>, tokio::io::Error> {
-    let conn = Arc::new(self);
-    let mut serve_conn = conn.clone();
-
-    let stream = conn.new_connection().await?;
-
-    tokio::spawn(async move {
-      let mut stream = Some(stream);
-
-      while !serve_conn.closed.load(Ordering::SeqCst) {
-        if let Err(err) = Self::serve_connection(serve_conn.clone(), stream).await {
-          println!("retrying on error while serving connection: {}", err);
-        }
-        stream = None;
-      }
-    });
-
-    Ok(conn)
-  }
-
-  async fn new_connection(&self) -> Result<TcpStream, std::io::Error> {
-    let sock = match self.addr.is_ipv4() {
-      true => TcpSocket::new_v4(),
-      false => TcpSocket::new_v6(),
-    }?;
-
-    let mut conn: TcpStream = match self.connect_timeout {
-      None => sock.connect(self.addr).await?,
-      Some(timeout) => match tokio::time::timeout(
-        timeout, sock.connect(self.addr)
-      ).await {
-        Ok(Ok(conn)) => conn,
-        Ok(Err(e)) => return Err(e.into()),
-        Err(_) => return Err(std::io::Error::new(
-          std::io::ErrorKind::TimedOut,
-          "connect timeout",
-        )),
-      },
-    };
-
-    let mut start_buf: [u8; 128] = [0; 128];
-
-    conn.read_exact(&mut start_buf).await?;
-
-    println!("start message: {}", str::from_utf8(&start_buf).expect("bad buf"));
-
-    Ok(conn)
-  }
-
-  async fn serve_connection(mut conn: Arc<Connection>, stream: Option<TcpStream>) -> Result<(), std::io::Error> {
+  async fn serve(conn: Arc<Connection>, stream: Option<TcpStream>) -> Result<(), std::io::Error> {
     let stream = match stream {
       Some(s) => s,
-      None => conn.new_connection().await?,
+      None => conn.connector.new_connection().await?,
     };
 
     let (read_stream, write_stream) = stream.into_split();
@@ -151,7 +224,7 @@ impl Connection {
     let reader_job = tokio::spawn(async move { reader_conn.reader(read_stream).await });
     conn.writer(write_stream).await;
 
-    reader_job.await;
+    let _ = reader_job.await;
 
     Ok(())
   }
@@ -165,9 +238,6 @@ impl Connection {
     let mut write = write;
     let mut write_buf: Vec<u8> = Vec::new();
     let mut req_chan = self.req_chan_reader.lock().await;
-
-    println!("writer start");
-    let guard = LogOnExit("writer exited".into());
 
     while !self.closed.load(Ordering::SeqCst) {
       write_buf.resize(0, 0);
@@ -187,10 +257,6 @@ impl Connection {
         return;
       }
     }
-  }
-
-  fn close(&self) {
-    self.closed.store(false, Ordering::SeqCst)
   }
 
   async fn reader(&self, read: OwnedReadHalf) {
@@ -242,6 +308,10 @@ impl Connection {
       }
     }
   }
+
+  fn close(&self) {
+    self.closed.store(false, Ordering::SeqCst)
+  }
 }
 
 impl Drop for Connection {
@@ -278,16 +348,77 @@ use super::*;
     let addr = "127.0.0.1:3301".parse().unwrap();
 
     let conn = Connection::new(addr)
+      .with_auth("em".into(), "em".into())
       .connect().await.unwrap();
 
-    let res: Vec<(u32, u32, u32)> = conn.select(Select {
-        space_id: 512, index_id: 0,
-        limit: 100, offset: 0,
-        iterator: Iterator::Eq,
-        keys: vec![ Value::UInt(1) ],
-    }).await.expect("bad query");
+    // let res: Vec<(u32, u32, u32)> = conn.select(Select {
+    //     space_id: 512, index_id: 0,
+    //     limit: 100, offset: 0,
+    //     iterator: Iterator::Eq,
+    //     keys: vec![ Value::UInt(1) ],
+    // }).await.expect("bad query");
+
+    let res: (u32, u32) = conn.call(Call {
+      function: "test".into(),
+      args: vec![ Value::UInt(1) ],
+  }).await.expect("bad query");
 
     dbg!(res);
   }
+
+  // #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+  // async fn my_test2() {
+  //   let addr = "127.0.0.1:3301".parse().unwrap();
+
+  //   let conn = Connection::new(addr)
+  //     .connect().await.unwrap();
+
+  //   let conn2 = conn.clone();
+  //   let conn3 = conn.clone();
+
+  //   let kk = tokio::spawn(async move {
+  //     for i in 0..100_000u32 {
+  //       let res: (u32, u32) = conn.call(Call {
+  //         function: "test".into(),
+  //         args: vec![ Value::UInt(i as u64) ],
+  //       }).await.expect("all ok");
+
+  //       assert_eq!(res, (i, i+1));
+  //     }
+  //   });
+
+  //   let kk2 = tokio::spawn(async move {
+  //     let req  = Select {
+  //       space_id: 512, index_id: 0,
+  //       limit: 100, offset: 0,
+  //       iterator: Iterator::Eq,
+  //       keys: vec![ Value::UInt(1) ],
+  //     };
+
+  //     for _ in 0..100_000u32 {
+  //       let res: Vec<(u32, u32, u32)> = conn2.select(req.clone())
+  //         .await.expect("all ok");
+  //       assert_eq!(res[0], (1, 2, 3));
+  //     }
+  //   });
+
+  //   let kk3 = tokio::spawn(async move {
+  //     let req  = Select {
+  //       space_id: 512, index_id: 0,
+  //       limit: 100, offset: 0,
+  //       iterator: Iterator::Eq,
+  //       keys: vec![ Value::UInt(1) ],
+  //     };
+
+  //     for _ in 0..100_000u32 {
+  //       let res: Vec<(u32, u32, u32)> = conn3.select(req.clone())
+  //         .await.expect("all ok");
+  //       assert_eq!(res[0], (1, 2, 3));
+  //     }
+  //   });
+
+
+  //   let _ = tokio::join!(kk, kk2, kk3);
+  // }
 
 }
