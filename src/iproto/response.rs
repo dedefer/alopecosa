@@ -1,19 +1,30 @@
-use std::{collections::HashMap, hash::Hash, io::{self, Cursor, Read}, marker::PhantomData, usize};
+/*!
+  This module contains types for parse responses.
+*/
 
-use super::{constants::{Code, Field, RequestType}, types::Error};
+use std::{
+  collections::HashMap,
+  io::{self, Cursor, Read},
+  marker::PhantomData,
+};
+
+use super::{constants::{Code, Field}, types::Error};
 
 use num_traits::FromPrimitive;
 use rmp::decode::{read_array_len, read_int, read_map_len};
 use rmpv::{Value, decode::read_value};
 use serde::de::DeserializeOwned;
 
+/// This is representation of tarantool response.
 #[derive(Debug)]
 pub struct Response {
   pub header: Header,
   pub body: Option<Vec<u8>>,
 }
 
+#[allow(dead_code)]
 impl Response {
+  /// allows you to parse iproto response header.
   pub fn parse<R>(mut reader: R) -> Result<Self, Error>
     where R: Read
   {
@@ -26,7 +37,7 @@ impl Response {
 
     reader.read_to_end(&mut body)?;
 
-    if body.len() == 0 {
+    if body.is_empty() {
       return Ok(Response { header, body: None });
     }
 
@@ -35,6 +46,7 @@ impl Response {
     Ok(Response { header, body: Some(body) })
   }
 
+  /// allows you to parse response body.
   pub fn unpack_body<B>(&self) -> Result<B::Result, Error>
     where B: BodyDecoder,
   {
@@ -48,12 +60,7 @@ impl Response {
   }
 }
 
-#[derive(Debug)]
-pub struct RequestHeader {
-  pub request_type: RequestType,
-  pub sync: u64,
-}
-
+/// Representation of response header.
 #[derive(Debug, Default)]
 pub struct Header {
   pub code: Code,
@@ -61,6 +68,7 @@ pub struct Header {
   pub schema: u64,
 }
 
+#[allow(dead_code)]
 impl Header {
   fn unpack<R>(reader: &mut R) -> Result<Self, Error>
     where R: Read,
@@ -91,9 +99,14 @@ impl Header {
   }
 }
 
+/**
+  This trait is used for parsing response body.
+
+  If you want to parse custom body you should implement it.
+*/
 pub trait BodyDecoder {
   type Result;
-  fn unpack(body: &Vec<u8>) -> Result<Self::Result, Error>;
+  fn unpack(body: &[u8]) -> Result<Self::Result, Error>;
 }
 
 #[derive(Debug, Default)]
@@ -106,18 +119,21 @@ pub struct StackRecord {
   pub errcode: u64,
 }
 
+
+/// This is representation of error returned from tarantool.
 #[derive(Debug)]
 pub struct TarantoolError {
   pub message: String,
   pub stack: Vec<StackRecord>,
 }
 
+/// This is decoder for error body.
 pub struct ErrorBody;
 
 impl BodyDecoder for ErrorBody {
   type Result = TarantoolError;
 
-  fn unpack(body: &Vec<u8>) -> Result<Self::Result, Error> {
+  fn unpack(body: &[u8]) -> Result<Self::Result, Error> {
     let mut reader = Cursor::new(body);
     let reader = &mut reader;
 
@@ -127,7 +143,7 @@ impl BodyDecoder for ErrorBody {
       message: String::new(), stack: Vec::new(),
     };
 
-    let read_string = |reader: &mut Cursor<&Vec<u8>>| -> Result<String, Error> {
+    let read_string = |reader: &mut Cursor<&[u8]>| -> Result<String, Error> {
       let str_len = rmp::decode::read_str_len(reader)?;
       let mut buf: Vec<u8> = Vec::new();
       buf.resize(str_len as usize, 0);
@@ -193,6 +209,7 @@ impl BodyDecoder for ErrorBody {
   }
 }
 
+/// This is default decoder for response body.
 pub struct TupleBody<T>(PhantomData<T>)
   where T: DeserializeOwned;
 
@@ -201,7 +218,7 @@ impl<T> BodyDecoder for TupleBody<T>
 {
   type Result = T;
 
-  fn unpack(body: &Vec<u8>) -> Result<T, Error> {
+  fn unpack(body: &[u8]) -> Result<T, Error> {
     let mut cur = Cursor::new(body);
 
     let map_len = read_map_len(&mut cur)?;
@@ -219,20 +236,23 @@ impl<T> BodyDecoder for TupleBody<T>
     match field {
       Field::Data =>
         rmp_serde::decode::from_read::<_, T>(cur)
-          .map_err(|e| Error::ParseError(e)),
-      _ => Err(Error::UnexpectedField(raw_field))?,
+          .map_err(Error::ParseError),
+      _ => Err(Error::UnexpectedField(raw_field)),
     }
   }
 }
 
-pub type SQLResponse = HashMap<Field, Value>;
+/// This is representation of SQL response body.
+pub type SQLBody = HashMap<Field, Value>;
 
-pub struct SQLBody;
 
-impl BodyDecoder for SQLBody {
-  type Result = SQLResponse;
+/// Decoder for SQL body.
+pub struct SQLBodyDecoder;
 
-  fn unpack(body: &Vec<u8>) -> Result<Self::Result, Error> {
+impl BodyDecoder for SQLBodyDecoder {
+  type Result = SQLBody;
+
+  fn unpack(body: &[u8]) -> Result<Self::Result, Error> {
     let mut reader = Cursor::new(body);
     let reader = &mut reader;
 

@@ -1,21 +1,30 @@
 [package]
 name = "alopecosa"
 version = "0.1.0"
-authors = ["danila.fomin <danila.fomin@corp.mail.ru>"]
+authors = ["dedefer <ddf1998@gmail.com>"]
 edition = "2018"
+readme = "README.md"
+license-file = "LICENSE"
+keywords = ["async", "tokio", "tarantool", "connector"]
+categories = ["asynchronous", "concurrency", "database"]
+repository = "https://github.com/dedefer/alopecosa"
+homepage = "https://github.com/dedefer/alopecosa"
+description = "Pure rust async Tarantool 1.6 connector built on tokio"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-tokio = { version = "1", features = [ "full" ] }
+tokio = { version = "1", features = [ "time", "rt", "net", "macros", "sync", "io-util" ] }
 rmp = "0.8"
 rmp-serde = "0.15"
 rmpv = "0.4"
 serde = { version = "1", features = [ "derive" ] }
 num-traits = "0.2"
 num-derive = "0.3"
-derivative = "2"
 log = "0.4"
 sha-1 = "0.9"
 base64 = "0.13"
 dashmap = "4"
+
+[dev-dependencies]
+tokio = { version = "1", features = [ "full" ] }

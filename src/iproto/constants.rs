@@ -1,7 +1,20 @@
+/*!
+  This module contains all known tarantool constants.
+*/
+
 use num_derive::{FromPrimitive, ToPrimitive};
 
+/**
+  Every error tarantool code is ERROR_BITMASK | error_number.
+*/
 pub const ERROR_BITMASK: isize = 1 << 15;
 
+/**
+  It represents all known tarantool response codes.
+
+  It also implements num_derive::{FromPrimitive, ToPrimitive},
+  so you can also convert it to int types.
+*/
 #[derive(
   Debug, Clone, Copy,
   PartialEq, Eq,
@@ -10,7 +23,7 @@ pub const ERROR_BITMASK: isize = 1 << 15;
 pub enum Code {
   Ok = 0,
 
-  ErrorUnknown                        = ERROR_BITMASK | 0,
+  ErrorUnknown                        = ERROR_BITMASK,
   ErrorIllegalParams                  = ERROR_BITMASK | 1,
   ErrorMemoryIssue                    = ERROR_BITMASK | 2,
   ErrorTupleFound                     = ERROR_BITMASK | 3,
@@ -236,7 +249,9 @@ pub enum Code {
 
 }
 
+#[allow(dead_code)]
 impl Code {
+  /// Is shortcut for code != Code::Ok
   pub fn is_err(self) -> bool { self != Code::Ok }
 }
 
@@ -244,6 +259,12 @@ impl Default for Code {
   fn default() -> Self { Code::Ok }
 }
 
+/**
+  It represents all known tarantool request types.
+
+  It also implements num_derive::{FromPrimitive, ToPrimitive},
+  so you can also convert it to int types.
+*/
 #[derive(
   Debug, Clone, Copy,
   PartialEq, Eq,
@@ -274,6 +295,12 @@ pub enum RequestType {
   Register        = 0x46,
 }
 
+/**
+  It represents all known tarantool protocol fields.
+
+  It also implements num_derive::{FromPrimitive, ToPrimitive},
+  so you can also convert it to int types.
+*/
 #[derive(
   Debug, Clone, Copy, Hash,
   PartialEq, Eq,
@@ -323,6 +350,12 @@ pub enum Field {
   Term          = 0x53,
 }
 
+/**
+  It represents all known tarantool iterator variants.
+
+  It also implements num_derive::{FromPrimitive, ToPrimitive},
+  so you can also convert it to int types.
+*/
 #[derive(
   Debug, Clone, Copy,
   PartialEq, Eq,

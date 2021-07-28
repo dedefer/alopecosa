@@ -1,7 +1,4 @@
-use std::{
-  io::Cursor,
-  sync::{Arc, atomic::{AtomicBool, Ordering}},
-};
+use std::{io::Cursor, net::SocketAddr, sync::{Arc, atomic::{AtomicBool, Ordering}}};
 
 use tokio::{
   io::{AsyncReadExt, AsyncWriteExt},
@@ -11,7 +8,7 @@ use tokio::{
 
 use crate::iproto::{request::Request, response::Response};
 
-use super::{connection::RespChans, connector::Connector};
+use super::{RespChans, connector::Connector};
 
 
 
@@ -26,12 +23,23 @@ pub(crate) struct ConnectionServer {
 }
 
 impl ConnectionServer {
-  pub(crate) async fn serve_cycle(mut self, stream: TcpStream) {
+  pub(crate) async fn serve_loop(mut self, stream: TcpStream) {
     let mut stream = Some(stream);
 
     while !self.closed.load(Ordering::SeqCst) {
       if let Err(err) = self.serve(stream).await {
-        println!("retrying on error while serving connection: {}", err);
+        if let Some(interval) = self.connector.reconnect_interval {
+          log::error!(
+            "[{}] reconnecting in {:?} on error while serving connection: {}",
+            &self.connector.addr, interval, err,
+          );
+          tokio::time::sleep(interval).await;
+        } else {
+          log::error!(
+            "[{}] reconnecting on error while serving connection: {}",
+            &self.connector.addr, err,
+          );
+        }
       }
       stream = None;
     }
@@ -40,66 +48,95 @@ impl ConnectionServer {
   async fn serve(&mut self, stream: Option<TcpStream>) -> Result<(), std::io::Error> {
     let stream = match stream {
       Some(s) => s,
-      None => self.connector.new_connection().await?,
+      None => self.connector.new_connection()
+          .await.map(|(s, _)| s)?,
     };
 
     let (read_stream, write_stream) = stream.into_split();
 
-    let reader_fut = Self::reader(read_stream, self.resp_chans.clone(), self.closed.clone());
+    let reader_fut = Self::reader(
+      self.connector.addr, read_stream,
+      self.resp_chans.clone(), self.closed.clone());
     let writer_fut = self.writer(write_stream);
 
     tokio::select! {
-      _ = reader_fut => return Ok(()),
-      _ = writer_fut => return Ok(()),
+      res = reader_fut => res,
+      res = writer_fut => res,
     }
   }
 
-  async fn writer(&mut self, mut write: OwnedWriteHalf) {
+  async fn writer(&mut self, mut write: OwnedWriteHalf) -> Result<(), std::io::Error> {
+    log::debug!("[{}] writer start", &self.connector.addr);
+
+    #[allow(unused_variables)]
+    let on_exit = OnExit(self.connector.addr, "writer");
+
     let mut write_buf: Vec<u8> = Vec::new();
 
     while !self.closed.load(Ordering::SeqCst) {
-      write_buf.resize(0, 0);
+      write_buf.clear();
 
       let req: Request = match self.req_chan_reader.recv().await {
         Some(req) => req,
-        None => return,
+        None => {
+          log::debug!(
+            "[{}] request channel closed, seems Connection dropped",
+            &self.connector.addr,
+          );
+          return Ok(())
+        },
       };
 
       if let Err(err) = req.pack(&mut write_buf) {
-        println!("error while packing request err: {}, req: {:?}", err, req);
+        log::error!(
+          "[{}] error while packing request err: {}, req: {:?}",
+          &self.connector.addr, err, req,
+        );
         continue;
       }
 
-      if let Err(err) = write.write_all(&write_buf).await {
-        println!("error while writing request: {}", err);
-        return;
+      match self.connector.send_request_timeout {
+        Some(timeout) => {
+          tokio::time::timeout(
+            timeout, write.write_all(&write_buf),
+          ).await??;
+        },
+        None => { write.write_all(&write_buf).await?; }
       }
     }
+
+    Ok(())
   }
 
   async fn reader(
+    addr: SocketAddr,
     mut read: OwnedReadHalf,
     resp_chans: RespChans,
     closed: Arc<AtomicBool>,
-  ) {
-    let mut buf = [0; 9];
+  ) -> Result<(), std::io::Error> {
+    log::debug!("[{}] reader start", addr);
+
+    #[allow(unused_variables)]
+    let on_exit = OnExit(addr, "reader");
+
+    const REQUEST_LEN_LEN: usize = 9;
+    let mut buf = [0; REQUEST_LEN_LEN];
     let mut req_buf: Vec<u8> = Vec::new();
 
     while !closed.load(Ordering::SeqCst) {
-      req_buf.resize(0, 0);
+      req_buf.clear();
 
-      if let Err(err) = read.read_exact(&mut buf).await {
-        println!("reconnecting on error while reading: {}", err);
-        return;
-      }
+      read.read_exact(&mut buf).await?;
 
       let mut cur = Cursor::new(&buf);
 
       let size = match rmp::decode::read_int::<u64, _>(&mut cur) {
         Ok(size) => size,
         Err(err) => {
-          println!("error while parsing request size: {}", err);
-          return;
+          return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("error while parsing request size: {:?}", err),
+          ));
         },
       };
 
@@ -108,25 +145,46 @@ impl ConnectionServer {
       req_buf.extend_from_slice(&buf);
       req_buf.resize(required_buf_size, 0);
 
-      if let Err(err) = read.read_exact(&mut req_buf[9..]).await {
-        println!("error while reading: {}", err);
-        return;
-      }
+      read.read_exact(&mut req_buf[REQUEST_LEN_LEN..]).await?;
 
       let mut req_cur = Cursor::new(&req_buf);
 
       let resp = match Response::parse(&mut req_cur) {
         Ok(resp) => resp,
         Err(err) => {
-          println!("error while parsing response header: {}", err);
+          log::error!(
+            "[{}] error while parsing response header: {}, resp: {:?}",
+            addr, err, &req_buf,
+          );
           continue;
         },
       };
 
       if let Some((_, resp_chan)) = resp_chans.remove(&resp.header.sync) {
-        if resp_chan.is_closed() { continue; }
-        let _ = resp_chan.send(resp);
+        if resp_chan.is_closed() {
+          log::debug!(
+            "[{}] can't find resp channel for {}",
+            addr, resp.header.sync,
+          );
+          continue;
+        }
+        if let Err(resp) = resp_chan.send(resp) {
+          log::debug!(
+            "[{}] resp channel closed for {}",
+            addr, resp.header.sync,
+          );
+        }
       }
     }
+
+    Ok(())
+  }
+}
+
+struct OnExit(SocketAddr, &'static str);
+
+impl Drop for OnExit {
+  fn drop(&mut self) {
+    log::debug!("[{}] {} closed", self.0, self.1);
   }
 }

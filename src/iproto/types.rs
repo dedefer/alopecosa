@@ -2,8 +2,10 @@ use std::{error, fmt::{Display, Debug}, io};
 use rmp::{decode::{NumValueReadError, ValueReadError}, encode::ValueWriteError};
 use crate::iproto::constants::Field;
 
-use super::{Code, response::TarantoolError};
+use super::{constants::Code, response::TarantoolError};
 
+/// pack/unpack and tarantool errors.
+#[allow(dead_code)]
 pub enum Error {
   ParseError(rmp_serde::decode::Error),
   PackError(ValueWriteError),

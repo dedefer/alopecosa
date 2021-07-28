@@ -1,16 +1,24 @@
+/*!
+  This module contains structs for requests.
+*/
+
 use std::io::Write;
 
-use super::{constants::{Field, RequestType, Iterator}, types::Error};
+use super::{
+  constants::{Field, RequestType, Iterator},
+  types::Error,
+};
 use num_traits::ToPrimitive;
-use rmp::encode::{write_array_len, write_map_len, write_sint, write_str, write_str_len, write_uint};
+use rmp::encode::{
+  write_array_len, write_map_len, write_sint,
+  write_str, write_str_len, write_uint,
+};
 
 macro_rules! req_func {
   ( $func:ident, $body:ident ) => {
+    #[allow(dead_code)]
     pub fn $func(body: $body) -> Request {
-      Request {
-        header: Header::new(RequestType::$body),
-        body: Box::new(body),
-      }
+      Request::new(RequestType::$body, body)
     }
   };
 }
@@ -27,23 +35,44 @@ req_func!(upsert, Upsert);
 req_func!(prepare, Prepare);
 req_func!(execute, Execute);
 
+#[allow(dead_code)]
 pub fn ping() -> Request {
   Request {
     header: Header::new(RequestType::Ping),
     body: Box::new(Ping),
   }
 }
+
+/**
+  This trait represents tarantool query body.
+
+  If you want to make custom request body, you should implement it.
+*/
 pub trait Body: std::fmt::Debug + Send {
   fn pack(&self) -> Result<Vec<u8>, Error>;
 }
 
+/**
+  This is representation of request.
+*/
 #[derive(Debug)]
 pub struct Request {
   pub header: Header,
   body: Box<dyn Body>,
 }
 
+#[allow(dead_code)]
 impl Request {
+
+  /// Allows you to construct request.
+  pub fn new<B: Body + 'static>(request: RequestType, body: B) -> Request {
+    Request {
+      header: Header::new(request),
+      body: Box::new(body),
+    }
+  }
+
+  /// Allows you to pack request.
   pub fn pack<W>(&self, w: &mut W) -> Result<(), Error>
     where W: Write
   {
@@ -55,24 +84,28 @@ impl Request {
 
     rmp::encode::write_uint(w, size as u64)?;
 
-    w.write(header.as_slice())?;
-    w.write(body.as_slice())?;
+    w.write_all(header.as_slice())?;
+    w.write_all(body.as_slice())?;
 
     Ok(())
   }
 }
 
+/// This represents header of request.
 #[derive(Debug)]
 pub struct Header {
   pub request: RequestType,
   pub sync: u64,
 }
 
+#[allow(dead_code)]
 impl Header {
+  /// Allows you to construct header.
   fn new(request: RequestType) -> Header {
     Header { request, sync: 0 }
   }
 
+  /// Allows you to pack header.
   fn pack(&self) -> Result<Vec<u8>, Error> {
     // think that request will be u32 and sync u64
     let mut buf: Vec<u8> = Vec::with_capacity(18);
@@ -89,6 +122,12 @@ impl Header {
   }
 }
 
+/**
+  This represents types allowed in tuple.
+
+  It implementst From for std types.
+*/
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum Value {
   Int(i64), UInt(u64),
@@ -96,6 +135,324 @@ pub enum Value {
   Bool(bool), Null,
   Str(String), Bin(Vec<u8>),
   Array(Vec<Value>),
+}
+
+macro_rules! impl_value_from_as {
+  ($value:ident, $type:ident, $as:ident) => {
+    impl From<$type> for Value {
+      fn from(value: $type) -> Self {
+        Value::$value(value as $as)
+      }
+    }
+  };
+}
+
+impl_value_from_as!(UInt, u64, u64);
+impl_value_from_as!(UInt, usize, u64);
+impl_value_from_as!(UInt, u32, u64);
+impl_value_from_as!(UInt, u16, u64);
+
+impl_value_from_as!(Int, i64, i64);
+impl_value_from_as!(Int, isize, i64);
+impl_value_from_as!(Int, i32, i64);
+impl_value_from_as!(Int, i16, i64);
+impl_value_from_as!(Int, i8, i64);
+
+impl_value_from_as!(F32, f32, f32);
+impl_value_from_as!(F64, f64, f64);
+
+impl From<bool> for Value {
+  fn from(value: bool) -> Self {
+    Value::Bool(value)
+  }
+}
+
+impl From<String> for Value {
+  fn from(value: String) -> Self {
+    Value::Str(value)
+  }
+}
+
+impl From<&str> for Value {
+  fn from(value: &str) -> Self {
+    Value::Str(value.into())
+  }
+}
+
+impl From<Vec<u8>> for Value {
+  fn from(value: Vec<u8>) -> Self {
+    Value::Bin(value)
+  }
+}
+
+impl From<&[u8]> for Value {
+  fn from(value: &[u8]) -> Self {
+    Value::Bin(value.into())
+  }
+}
+
+impl<T: Into<Value>> From<Option<T>> for Value {
+  fn from(value: Option<T>) -> Self {
+    match value {
+      Some(value) => value.into(),
+      None => Value::Null,
+    }
+  }
+}
+
+impl<T: Into<Value>> From<Vec<T>> for Value {
+  fn from(mut value: Vec<T>) -> Self {
+    let mut new_vec = Vec::with_capacity(value.len());
+    for i in 0..value.len() {
+      new_vec.push(value.remove(i).into());
+    }
+    Value::Array(new_vec)
+  }
+}
+
+impl<T> From<&[T]> for Value
+  where T: Into<Value> + Clone
+{
+  fn from(value: &[T]) -> Self {
+    Value::Array(value.iter()
+      .map(|v| v.clone().into())
+      .collect()
+    )
+  }
+}
+
+/**
+  This trait provides shortcuts for Vec<Value>.
+
+  instead of
+  ```rust
+    vec![ Value::Int(1), Value::Str("test") ]
+  ```
+  you can use
+  ```rust
+    ( 1, "test" ).to_tuple()
+  ```
+
+  It works for slice, vec, and tuples with up to 10 elements.
+*/
+pub trait IntoTuple {
+  fn into_tuple(self) -> Vec<Value>;
+}
+
+impl<T> IntoTuple for Vec<T> where T: Into<Value> {
+  fn into_tuple(mut self) -> Vec<Value> {
+    let mut new_vec = Vec::with_capacity(self.len());
+    for i in 0..self.len() {
+      new_vec.push(self.remove(i).into());
+    }
+    new_vec
+  }
+}
+
+impl<T> IntoTuple for &[T]
+  where T: Into<Value> + Clone
+{
+  fn into_tuple(self) -> Vec<Value> {
+    self.iter().map(|v| v.clone().into()).collect()
+  }
+}
+
+impl IntoTuple for ()
+{
+  fn into_tuple(self) -> Vec<Value> {
+    Vec::new()
+  }
+}
+
+impl<T1> IntoTuple for (T1,)
+  where T1: Into<Value>
+{
+  fn into_tuple(self) -> Vec<Value> {
+    vec![ self.0.into() ]
+  }
+}
+
+impl<T1, T2> IntoTuple for (T1, T2)
+  where
+    T1: Into<Value>,
+    T2: Into<Value>,
+{
+  fn into_tuple(self) -> Vec<Value> {
+    vec![ self.0.into(), self.1.into() ]
+  }
+}
+
+impl<T1, T2, T3> IntoTuple for (T1, T2, T3)
+  where
+    T1: Into<Value>,
+    T2: Into<Value>,
+    T3: Into<Value>,
+{
+  fn into_tuple(self) -> Vec<Value> {
+    vec![ self.0.into(), self.1.into(), self.2.into() ]
+  }
+}
+
+impl<T1, T2, T3, T4> IntoTuple for (T1, T2, T3, T4)
+  where
+    T1: Into<Value>,
+    T2: Into<Value>,
+    T3: Into<Value>,
+    T4: Into<Value>,
+{
+  fn into_tuple(self) -> Vec<Value> {
+    vec![
+      self.0.into(),
+      self.1.into(),
+      self.2.into(),
+      self.3.into(),
+    ]
+  }
+}
+
+
+impl<T1, T2, T3, T4, T5> IntoTuple for (T1, T2, T3, T4, T5)
+  where
+    T1: Into<Value>,
+    T2: Into<Value>,
+    T3: Into<Value>,
+    T4: Into<Value>,
+    T5: Into<Value>,
+{
+  fn into_tuple(self) -> Vec<Value> {
+    vec![
+      self.0.into(),
+      self.1.into(),
+      self.2.into(),
+      self.3.into(),
+      self.4.into(),
+    ]
+  }
+}
+
+impl<T1, T2, T3, T4, T5, T6> IntoTuple for (T1, T2, T3, T4, T5, T6)
+  where
+    T1: Into<Value>,
+    T2: Into<Value>,
+    T3: Into<Value>,
+    T4: Into<Value>,
+    T5: Into<Value>,
+    T6: Into<Value>,
+{
+  fn into_tuple(self) -> Vec<Value> {
+    vec![
+      self.0.into(),
+      self.1.into(),
+      self.2.into(),
+      self.3.into(),
+      self.4.into(),
+      self.5.into(),
+    ]
+  }
+}
+
+impl<T1, T2, T3, T4, T5, T6, T7> IntoTuple for (T1, T2, T3, T4, T5, T6, T7)
+  where
+    T1: Into<Value>,
+    T2: Into<Value>,
+    T3: Into<Value>,
+    T4: Into<Value>,
+    T5: Into<Value>,
+    T6: Into<Value>,
+    T7: Into<Value>,
+{
+  fn into_tuple(self) -> Vec<Value> {
+    vec![
+      self.0.into(),
+      self.1.into(),
+      self.2.into(),
+      self.3.into(),
+      self.4.into(),
+      self.5.into(),
+      self.6.into(),
+    ]
+  }
+}
+
+impl<T1, T2, T3, T4, T5, T6, T7, T8> IntoTuple for (T1, T2, T3, T4, T5, T6, T7, T8)
+  where
+    T1: Into<Value>,
+    T2: Into<Value>,
+    T3: Into<Value>,
+    T4: Into<Value>,
+    T5: Into<Value>,
+    T6: Into<Value>,
+    T7: Into<Value>,
+    T8: Into<Value>,
+{
+  fn into_tuple(self) -> Vec<Value> {
+    vec![
+      self.0.into(),
+      self.1.into(),
+      self.2.into(),
+      self.3.into(),
+      self.4.into(),
+      self.5.into(),
+      self.6.into(),
+      self.7.into(),
+    ]
+  }
+}
+
+impl<T1, T2, T3, T4, T5, T6, T7, T8, T9> IntoTuple for (T1, T2, T3, T4, T5, T6, T7, T8, T9)
+  where
+    T1: Into<Value>,
+    T2: Into<Value>,
+    T3: Into<Value>,
+    T4: Into<Value>,
+    T5: Into<Value>,
+    T6: Into<Value>,
+    T7: Into<Value>,
+    T8: Into<Value>,
+    T9: Into<Value>,
+{
+  fn into_tuple(self) -> Vec<Value> {
+    vec![
+      self.0.into(),
+      self.1.into(),
+      self.2.into(),
+      self.3.into(),
+      self.4.into(),
+      self.5.into(),
+      self.6.into(),
+      self.7.into(),
+      self.8.into(),
+    ]
+  }
+}
+
+impl<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> IntoTuple for (T1, T2, T3, T4, T5, T6, T7, T8, T9, T10)
+  where
+    T1: Into<Value>,
+    T2: Into<Value>,
+    T3: Into<Value>,
+    T4: Into<Value>,
+    T5: Into<Value>,
+    T6: Into<Value>,
+    T7: Into<Value>,
+    T8: Into<Value>,
+    T9: Into<Value>,
+    T10: Into<Value>,
+{
+  fn into_tuple(self) -> Vec<Value> {
+    vec![
+      self.0.into(),
+      self.1.into(),
+      self.2.into(),
+      self.3.into(),
+      self.4.into(),
+      self.5.into(),
+      self.6.into(),
+      self.7.into(),
+      self.8.into(),
+      self.9.into(),
+    ]
+  }
 }
 
 impl Value {
@@ -231,7 +588,7 @@ pub struct Insert {
 impl Body for Insert {
   fn pack(&self) -> Result<Vec<u8>, Error> {
     let mut data: Vec<u8> = Vec::with_capacity(
-      1 + 2 + (1 * 5) +
+      1 + 2 + 5 +
       (1 + self.tuple.len() * 5)
     );
     let buf = &mut data;
@@ -249,6 +606,7 @@ impl Body for Insert {
   }
 }
 
+#[allow(dead_code)]
 pub type Replace = Insert;
 
 #[derive(Debug)]
@@ -399,6 +757,7 @@ impl Body for Ping {
 }
 
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum Prepare {
   StatementID(i64),
