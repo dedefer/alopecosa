@@ -5,6 +5,7 @@ use std::{
 };
 
 use base64::decode;
+use dashmap::DashMap;
 use sha1::{Digest, Sha1};
 use tokio::{
   io::{AsyncReadExt, AsyncWriteExt},
@@ -47,7 +48,7 @@ impl Connector {
 
     let (sender, reader) = mpsc::channel(1000);
 
-    let resp_chans = Arc::new(Mutex::new(HashMap::new()));
+    let resp_chans = Arc::new(DashMap::new());
 
     let closed = Arc::new(AtomicBool::new(false));
 

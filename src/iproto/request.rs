@@ -2,34 +2,40 @@ use std::io::Write;
 
 use super::{constants::{Field, RequestType, Iterator}, types::Error};
 use num_traits::ToPrimitive;
-use rmp::encode::{write_array_len, write_map_len, write_str, write_str_len, write_uint};
+use rmp::encode::{write_array_len, write_map_len, write_sint, write_str, write_str_len, write_uint};
 
-pub trait Pack {
+macro_rules! req_func {
+  ( $func:ident, $body:ident ) => {
+    pub fn $func(body: $body) -> Request {
+      Request {
+        header: Header::new(RequestType::$body),
+        body: Box::new(body),
+      }
+    }
+  };
+}
+
+req_func!(auth, Auth);
+req_func!(select, Select);
+req_func!(call, Call);
+req_func!(insert, Insert);
+req_func!(replace, Replace);
+req_func!(update, Update);
+req_func!(delete, Delete);
+req_func!(eval, Eval);
+req_func!(upsert, Upsert);
+req_func!(prepare, Prepare);
+req_func!(execute, Execute);
+
+pub fn ping() -> Request {
+  Request {
+    header: Header::new(RequestType::Ping),
+    body: Box::new(Ping),
+  }
+}
+pub trait Body: std::fmt::Debug + Send {
   fn pack(&self) -> Result<Vec<u8>, Error>;
 }
-
-pub fn auth(body: Auth) -> Request {
-  Request {
-    header: Header { request: RequestType::Auth, sync: 0 },
-    body: Box::new(body),
-  }
-}
-
-pub fn select(body: Select) -> Request {
-  Request {
-    header: Header { request: RequestType::Select, sync: 0 },
-    body: Box::new(body),
-  }
-}
-
-pub fn call(body: Call) -> Request {
-  Request {
-    header: Header { request: RequestType::Call, sync: 0 },
-    body: Box::new(body),
-  }
-}
-
-pub trait Body: Pack + std::fmt::Debug + Send {}
 
 #[derive(Debug)]
 pub struct Request {
@@ -62,7 +68,11 @@ pub struct Header {
   pub sync: u64,
 }
 
-impl Pack for Header {
+impl Header {
+  fn new(request: RequestType) -> Header {
+    Header { request, sync: 0 }
+  }
+
   fn pack(&self) -> Result<Vec<u8>, Error> {
     // think that request will be u32 and sync u64
     let mut buf: Vec<u8> = Vec::with_capacity(18);
@@ -121,12 +131,11 @@ pub struct Select {
   pub keys: Vec<Value>,
 }
 
-impl Body for Select {}
-
-impl Pack for Select {
+impl Body for Select {
   fn pack(&self) -> Result<Vec<u8>, Error> {
     let mut data: Vec<u8> = Vec::with_capacity(
-      1 + (5 * 5) + (1 + self.keys.len() * 5),
+      1 + 6 + (5 * 5) +
+      (1 + self.keys.len() * 5)
     );
     let buf = &mut data;
 
@@ -155,18 +164,18 @@ impl Pack for Select {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Call {
   pub function: String,
   pub args: Vec<Value>,
 }
 
-impl Body for Call {}
-
-impl Pack for Call {
+impl Body for Call {
   fn pack(&self) -> Result<Vec<u8>, Error> {
     let mut data: Vec<u8> = Vec::with_capacity(
-      1 + (1 + self.function.len()) + (1 + self.args.len() * 5),
+      1 + 2 +
+      (1 + self.function.len()) +
+      (1 + self.args.len() * 5)
     );
     let buf = &mut data;
 
@@ -189,11 +198,13 @@ pub struct Auth {
   pub scramble: Vec<u8>,
 }
 
-impl Body for Auth {}
-
-impl Pack for Auth {
+impl Body for Auth {
   fn pack(&self) -> Result<Vec<u8>, Error> {
-    let mut data: Vec<u8> = Vec::with_capacity(26 + self.user.len());
+    let mut data: Vec<u8> = Vec::with_capacity(
+      1 + 2 +
+      (1 + self.user.len()) +
+      (1 + self.scramble.len())
+    );
     let buf = &mut data;
 
     write_map_len(buf, 2)?;
@@ -211,110 +222,328 @@ impl Pack for Auth {
   }
 }
 
+#[derive(Debug)]
+pub struct Insert {
+  pub space_id: u64,
+  pub tuple: Vec<Value>,
+}
 
+impl Body for Insert {
+  fn pack(&self) -> Result<Vec<u8>, Error> {
+    let mut data: Vec<u8> = Vec::with_capacity(
+      1 + 2 + (1 * 5) +
+      (1 + self.tuple.len() * 5)
+    );
+    let buf = &mut data;
+
+    write_map_len(buf, 2)?;
+
+    write_uint(buf, Field::SpaceID.to_u64().unwrap())?;
+    write_uint(buf, self.space_id)?;
+
+    write_uint(buf, Field::Tuple.to_u64().unwrap())?;
+    write_array_len(buf, self.tuple.len() as u32)?;
+    for v in self.tuple.iter() { v.pack(buf)?; }
+
+    Ok(data)
+  }
+}
+
+pub type Replace = Insert;
+
+#[derive(Debug)]
+pub struct Update {
+  pub space_id: u64,
+  pub index_id: u64,
+  pub key: Vec<Value>,
+  pub tuple: Vec<Vec<Value>>,
+}
+
+impl Body for Update {
+  fn pack(&self) -> Result<Vec<u8>, Error> {
+    let mut data: Vec<u8> = Vec::with_capacity(
+      1 + 4 + (5 * 2) +
+      (1 + self.key.len() * 5) +
+      (1 + self.tuple.len() * (1 + 5 * 3))
+    );
+    let buf = &mut data;
+
+    write_map_len(buf, 4)?;
+
+    write_uint(buf, Field::SpaceID.to_u64().unwrap())?;
+    write_uint(buf, self.space_id)?;
+
+    write_uint(buf, Field::IndexID.to_u64().unwrap())?;
+    write_uint(buf, self.index_id)?;
+
+    write_uint(buf, Field::Key.to_u64().unwrap())?;
+    write_array_len(buf, self.key.len() as u32)?;
+    for v in self.key.iter() { v.pack(buf)?; }
+
+    write_uint(buf, Field::Tuple.to_u64().unwrap())?;
+    write_array_len(buf, self.tuple.len() as u32)?;
+    for update in self.tuple.iter() {
+      write_array_len(buf, update.len() as u32)?;
+      for v in update.iter() { v.pack(buf)?; }
+    }
+
+    Ok(data)
+  }
+}
+
+#[derive(Debug)]
+pub struct Delete {
+  pub space_id: u64,
+  pub index_id: u64,
+  pub key: Vec<Value>,
+}
+
+impl Body for Delete {
+  fn pack(&self) -> Result<Vec<u8>, Error> {
+    let mut data: Vec<u8> = Vec::with_capacity(
+      1 + 3 + (5 * 2) + (1 + self.key.len() * 5)
+    );
+    let buf = &mut data;
+
+    write_map_len(buf, 3)?;
+
+    write_uint(buf, Field::SpaceID.to_u64().unwrap())?;
+    write_uint(buf, self.space_id)?;
+
+    write_uint(buf, Field::IndexID.to_u64().unwrap())?;
+    write_uint(buf, self.index_id)?;
+
+    write_uint(buf, Field::Key.to_u64().unwrap())?;
+    write_array_len(buf, self.key.len() as u32)?;
+    for v in self.key.iter() { v.pack(buf)?; }
+
+    Ok(data)
+  }
+}
+
+#[derive(Debug)]
+pub struct Eval {
+  pub expr: String,
+  pub args: Vec<Value>,
+}
+
+impl Body for Eval {
+  fn pack(&self) -> Result<Vec<u8>, Error> {
+    let mut data: Vec<u8> = Vec::with_capacity(
+      1 + 2 +
+      (1 + self.expr.len()) +
+      (1 + self.args.len() * 5)
+    );
+    let buf = &mut data;
+
+    write_map_len(buf, 2)?;
+
+    write_uint(buf, Field::Expr.to_u64().unwrap())?;
+    write_str(buf, &self.expr)?;
+
+    write_uint(buf, Field::Tuple.to_u64().unwrap())?;
+    write_array_len(buf, self.args.len() as u32)?;
+    for v in self.args.iter() { v.pack(buf)?; }
+
+    Ok(data)
+  }
+}
+
+#[derive(Debug)]
+pub struct Upsert {
+  pub space_id: u64,
+  pub index_base: u64,
+  pub ops: Vec<Vec<Value>>,
+  pub tuple: Vec<Value>,
+}
+
+impl Body for Upsert {
+  fn pack(&self) -> Result<Vec<u8>, Error> {
+    let mut data: Vec<u8> = Vec::with_capacity(
+      1 + 4 +
+      (1 + self.tuple.len() * 5) +
+      (1 + self.ops.len() * (1 + 5 * 3))
+    );
+    let buf = &mut data;
+
+    write_map_len(buf, 4)?;
+
+    write_uint(buf, Field::SpaceID.to_u64().unwrap())?;
+    write_uint(buf, self.space_id)?;
+
+    write_uint(buf, Field::IndexBase.to_u64().unwrap())?;
+    write_uint(buf, self.index_base)?;
+
+    write_uint(buf, Field::Ops.to_u64().unwrap())?;
+    write_array_len(buf, self.ops.len() as u32)?;
+    for update in self.ops.iter() {
+      write_array_len(buf, update.len() as u32)?;
+      for v in update.iter() { v.pack(buf)?; }
+    }
+
+    write_uint(buf, Field::Tuple.to_u64().unwrap())?;
+    write_array_len(buf, self.tuple.len() as u32)?;
+    for v in self.tuple.iter() { v.pack(buf)?; }
+
+    Ok(data)
+  }
+}
+
+#[derive(Debug)]
+pub struct Ping;
+
+impl Body for Ping {
+  fn pack(&self) -> Result<Vec<u8>, Error> {
+    Ok(Vec::new())
+  }
+}
+
+
+#[derive(Debug)]
+pub enum Prepare {
+  StatementID(i64),
+  SQL(String),
+}
+
+impl Prepare {
+  fn pack_pair<W>(&self, w: &mut W) -> Result<(), Error>
+    where W: Write
+  {
+    match self {
+      &Self::StatementID(id) => {
+        write_uint(w, Field::StmtID.to_u64().unwrap())?;
+        write_sint(w, id)?;
+      },
+      Self::SQL(stmt) => {
+        write_uint(w, Field::SqlText.to_u64().unwrap())?;
+        write_str(w, &stmt)?;
+      },
+    };
+
+    Ok(())
+  }
+
+  fn pair_size_hint(&self) -> usize {
+    match self {
+      &Self::StatementID(_) => 1 + 5,
+      Self::SQL(stmt) => 1 + (1 + stmt.len()),
+    }
+  }
+}
+
+impl Body for Prepare {
+  fn pack(&self) -> Result<Vec<u8>, Error> {
+    let mut data: Vec<u8> = Vec::with_capacity(1 + self.pair_size_hint());
+
+    let buf = &mut data;
+
+    write_map_len(buf, 1)?;
+
+    self.pack_pair(buf)?;
+
+    Ok(data)
+  }
+}
+
+#[derive(Debug)]
+pub struct Execute {
+  pub expr: Prepare,
+  pub sql_bind: Vec<Value>,
+  pub options: Vec<Value>,
+}
+
+impl Body for Execute {
+  fn pack(&self) -> Result<Vec<u8>, Error> {
+    let mut data: Vec<u8> = Vec::with_capacity(
+      1 + self.expr.pair_size_hint() +
+      (1 + 1 + 5 * self.sql_bind.len()) +
+      (1 + 1 + 5 * self.options.len())
+    );
+
+    let buf = &mut data;
+
+    write_map_len(buf, 3)?;
+
+    self.expr.pack_pair(buf)?;
+
+    write_uint(buf, Field::SqlBind.to_u64().unwrap())?;
+    write_array_len(buf, self.sql_bind.len() as u32)?;
+    for v in self.sql_bind.iter() { v.pack(buf)?; }
+
+    write_uint(buf, Field::Options.to_u64().unwrap())?;
+    write_array_len(buf, self.options.len() as u32)?;
+    for v in self.options.iter() { v.pack(buf)?; }
+
+    Ok(data)
+  }
+}
 
 #[cfg(test)]
 mod tests {
-  use std::io::Cursor;
-
   use super::*;
 
-  // #[test]
-  // fn it_works() {
-  //   let header = Header {
-  //     request: RequestType::Select, sync: 123,
-  //   };
-  //   dbg!(&header);
+  #[test]
+  fn test_select() {
+    let mut req = select(Select {
+        space_id: 512,
+        index_id: 0,
+        limit: 123,
+        offset: 0,
+        iterator: Iterator::Eq,
+        keys: vec![Value::UInt(1)],
+    });
 
-  //   let packed = header.pack().unwrap();
-  //   dbg!(dbg!(packed).len());
-  // }
+    req.header.sync = u32::MAX as u64 + 100;
 
+    let mut buf: Vec<u8> = Vec::new();
 
-  // #[test]
-  // fn it_works3() {
-  //   let mut req = select(Select {
-  //       space_id: 512,
-  //       index_id: 0,
-  //       limit: 123,
-  //       offset: 0,
-  //       iterator: Iterator::Eq,
-  //       keys: vec![Value::UInt(1)],
-  //   });
+    req.pack(&mut buf).expect("pack error");
 
-  //   req.header.sync = u32::MAX as u64 + 100;
+    assert_eq!(
+      &buf,
+      &[
+        29, 130, 0, 1, 1, 207, 0, 0, 0, 1, 0, 0, 0,
+        99, 134, 16, 205, 2, 0, 17, 0, 18, 123, 19,
+        0, 20, 0, 32, 145, 1,
+      ],
+    );
 
-  //   let mut buf: Vec<u8> = Vec::new();
+  }
 
-  //   req.pack(&mut buf).unwrap();
-  // }
+  #[test]
+  fn test_call() {
+    let mut req = call(Call {
+      function: "test".into(),
+      args: vec![ Value::UInt(123) ],
+    });
 
+    req.header.sync = u32::MAX as u64 + 100;
 
-  //   dbg!(&req);
-  //   dbg!(&buf);
-  //   dbg!(buf.len());
-  // }
+    let mut buf: Vec<u8> = Vec::new();
 
-  // #[test]
-  // fn test_call() {
-  //   let mut req = call(Call {
-  //     function: "test".into(),
-  //     args: vec![ Value::UInt(123) ],
-  //   });
+    req.pack(&mut buf).unwrap();
 
-  //   req.header.sync = u32::MAX as u64 + 100;
+    assert_eq!(
+      &buf,
+      &[
+        23, 130, 0, 10, 1, 207, 0, 0, 0, 1, 0, 0, 0, 99,
+        130, 34, 164, 116, 101, 115, 116, 33, 145, 123,
+      ],
+    )
+  }
 
-  //   let mut buf: Vec<u8> = Vec::new();
+  #[test]
+  fn test_insert() {
+    let req = insert(Insert {
+      space_id: 512,
+      tuple: vec![ Value::UInt(2) ],
+    });
 
-  //   req.pack(&mut buf).unwrap();
+    let mut buf: Vec<u8> = Vec::new();
 
-  //   dbg!(&req);
-  //   dbg!(&buf);
-  //   dbg!(buf.len());
-  // }
+    req.pack(&mut buf).unwrap();
 
-  // #[test]
-  // fn it_works4() {
-  //   let mut buf = [23, 131, 0, 1, 1, 0, 5, 80, 134, 16, 205, 2, 0, 17, 0, 19, 0, 18, 12, 20, 0, 32, 145, 1];
-  //   let mut buf_my = [23, 130, 0, 1, 1, 0, 5, 80, 130, 16, 205, 2, 0, 17, 0, 18, 123, 19, 0, 20, 0, 32, 145, 1];
-
-  //   let mut cur = Cursor::new(&mut buf);
-  //   let mut cur_my = Cursor::new(&mut buf_my);
-
-  //   let cur = &mut cur;
-  //   let cur_my = &mut cur_my;
-
-
-  //   dbg!(rmp::decode::read_int::<u64, _>(cur));
-  //   dbg!(rmp::decode::read_int::<u64, _>(cur_my));
-
-  //   dbg!("======================================================");
-
-  //   dbg!(rmpv::decode::read_value(cur));
-  //   dbg!(rmpv::decode::read_value(cur_my));
-
-  //   dbg!("======================================================");
-
-  //   dbg!(rmpv::decode::read_value(cur));
-  //   dbg!(rmpv::decode::read_value(cur_my));
-
-  //   // dbg!(rmp::decode::read_map_len(cur));
-  //   // dbg!(cur.position());
-
-  //   // dbg!(rmp::decode::read_int::<u64, _>(cur).unwrap());
-  //   // dbg!(cur.position());
-  //   // dbg!(rmp::decode::read_int::<u64, _>(cur).unwrap());
-  //   // dbg!(cur.position());
-
-  //   // dbg!(rmp::decode::read_int::<u64, _>(cur).unwrap());
-  //   // dbg!(cur.position());
-  //   // dbg!(rmp::decode::read_int::<u64, _>(cur).unwrap());
-  //   // dbg!(cur.position());
-
-  //   // dbg!(rmp::decode::read_int::<u64, _>(cur).unwrap());
-  //   // dbg!(cur.position());
-  //   // dbg!(rmp::decode::read_int::<u64, _>(cur).unwrap());
-  //   // dbg!(cur.position());
-  // }
+    assert_eq!(&buf, &[13, 130, 0, 2, 1, 0, 130, 16, 205, 2, 0, 33, 145, 2]);
+  }
 
 }

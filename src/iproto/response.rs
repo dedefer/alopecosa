@@ -1,14 +1,51 @@
-use std::{collections::HashMap, io::{self, Cursor, Read}, marker::PhantomData, usize};
+use std::{collections::HashMap, hash::Hash, io::{self, Cursor, Read}, marker::PhantomData, usize};
 
 use super::{constants::{Code, Field, RequestType}, types::Error};
 
 use num_traits::FromPrimitive;
-use rmp::decode::{NumValueReadError, ValueReadError, read_array_len, read_int, read_map_len};
+use rmp::decode::{read_array_len, read_int, read_map_len};
 use rmpv::{Value, decode::read_value};
 use serde::de::DeserializeOwned;
 
-pub trait Parse<R: Read>: Sized {
-  fn parse(bytes: &mut R) -> Result<Self, Error>;
+#[derive(Debug)]
+pub struct Response {
+  pub header: Header,
+  pub body: Option<Vec<u8>>,
+}
+
+impl Response {
+  pub fn parse<R>(mut reader: R) -> Result<Self, Error>
+    where R: Read
+  {
+    let size: u64 = read_int(&mut reader)?;
+    let mut reader = reader.take(size);
+
+    let header = Header::unpack(&mut  reader)?;
+
+    let mut body: Vec<u8> = Vec::with_capacity(size as usize);
+
+    reader.read_to_end(&mut body)?;
+
+    if body.len() == 0 {
+      return Ok(Response { header, body: None });
+    }
+
+    body.shrink_to_fit();
+
+    Ok(Response { header, body: Some(body) })
+  }
+
+  pub fn unpack_body<B>(&self) -> Result<B::Result, Error>
+    where B: BodyDecoder,
+  {
+    match &self.body {
+      Some(body) => B::unpack(body),
+      None => Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "body is empty",
+      ).into()),
+    }
+  }
 }
 
 #[derive(Debug)]
@@ -24,13 +61,13 @@ pub struct Header {
   pub schema: u64,
 }
 
-impl<R: Read> Parse<R> for Header {
-  fn parse(reader: &mut R) -> Result<Self, Error> {
+impl Header {
+  fn unpack<R>(reader: &mut R) -> Result<Self, Error>
+    where R: Read,
+  {
     let mut header = Header::default();
 
-    let mut map_len = read_map_len(reader)?;
-
-    for _ in 0..map_len {
+    for _ in 0..read_map_len(reader)? {
       let raw_field: u64 = read_int(reader)?;
       let field: Field = FromPrimitive::from_u64(raw_field)
         .ok_or(Error::UnexpectedField(raw_field))?;
@@ -188,44 +225,32 @@ impl<T> BodyDecoder for TupleBody<T>
   }
 }
 
-#[derive(Debug)]
-pub struct Response {
-  pub header: Header,
-  pub body: Option<Vec<u8>>,
-}
+pub type SQLResponse = HashMap<Field, Value>;
 
-impl Response {
-  pub fn parse<R>(mut reader: R) -> Result<Self, Error>
-    where R: Read
-  {
-    let size: u64 = read_int(&mut reader)?;
-    let mut reader = reader.take(size);
+pub struct SQLBody;
 
-    let header: Header = Parse::parse(&mut  reader)?;
+impl BodyDecoder for SQLBody {
+  type Result = SQLResponse;
 
-    let mut body: Vec<u8> = Vec::with_capacity(size as usize);
+  fn unpack(body: &Vec<u8>) -> Result<Self::Result, Error> {
+    let mut reader = Cursor::new(body);
+    let reader = &mut reader;
 
-    reader.read_to_end(&mut body)?;
+    let mut body = HashMap::new();
 
-    if body.len() == 0 {
-      return Ok(Response { header, body: None });
+    let map_len = read_map_len(reader)?;
+
+    for _ in 0..map_len {
+      let raw_field: u64 = read_int(reader)?;
+      let field: Field = FromPrimitive::from_u64(raw_field)
+        .ok_or(Error::UnexpectedField(raw_field))?;
+
+      let value = read_value(reader)?;
+
+      body.insert(field, value);
     }
 
-    body.shrink_to_fit();
-
-    Ok(Response { header, body: Some(body) })
-  }
-
-  pub fn unpack_body<B>(&self) -> Result<B::Result, Error>
-    where B: BodyDecoder,
-  {
-    match &self.body {
-      Some(body) => B::unpack(body),
-      None => Err(io::Error::new(
-        io::ErrorKind::InvalidInput,
-        "body is empty",
-      ).into()),
-    }
+    Ok(body)
   }
 }
 
@@ -233,52 +258,53 @@ impl Response {
 mod tests {
     use super::*;
 
-    // #[test]
-    // fn it_works() {
-    //   let buf = [
-    //     206, 0, 0, 0, 34, 131, 0, 206, 0, 0, 0, 0, 1,
-    //     207, 0, 0, 0, 0, 0, 0, 0, 0, 5, 206, 0, 0, 0,
-    //     80, 129, 48, 221, 0, 0, 0, 1, 147, 1, 2, 3,
-    //   ];
-    //   let resp = Response::parse(&buf[..]).unwrap();
-    //   let tuple: Vec<(u64, u64, u64)> = dbg!(resp).unpack_body::<TupleBody<_>>().unwrap();
-    //   dbg!(tuple);
-    // }
+    #[test]
+    fn test_select_body() {
+      let buf = [
+        206, 0, 0, 0, 34, 131, 0, 206, 0, 0, 0, 0, 1,
+        207, 0, 0, 0, 0, 0, 0, 0, 0, 5, 206, 0, 0, 0,
+        80, 129, 48, 221, 0, 0, 0, 1, 147, 1, 2, 3,
+      ];
+      let resp = Response::parse(&buf[..]).unwrap();
+      let tuple: Vec<(u64, u64, u64)> = resp.unpack_body::<TupleBody<_>>().unwrap();
+      assert_eq!(&tuple, &[(1, 2, 3)]);
+    }
 
 
-    // #[test]
-    // fn it_works_call() {
-    //   let buf = [
-    //     206, 0, 0, 0, 32, 131, 0, 206, 0, 0, 0, 0, 1, 207,
-    //     0, 0, 0, 1, 0, 0, 0, 99, 5, 206, 0, 0, 0, 80,
-    //     129, 48, 221, 0, 0, 0, 2, 123, 124,
-    //   ];
-    //   let mut cur = Cursor::new(&buf);
+    #[test]
+    fn test_call_body() {
+      let buf = [
+        206, 0, 0, 0, 32, 131, 0, 206, 0, 0, 0, 0, 1, 207,
+        0, 0, 0, 1, 0, 0, 0, 99, 5, 206, 0, 0, 0, 80,
+        129, 48, 221, 0, 0, 0, 2, 123, 124,
+      ];
 
-    //   let resp = Response::parse(&mut cur).unwrap();
-    //   let tuple: (u64, u64) = dbg!(resp).unpack_body::<TupleBody<_>>().unwrap();
-    //   dbg!(tuple);
-    // }
+      let resp = Response::parse(&buf[..]).unwrap();
+      let tuple: (u64, u64) = resp.unpack_body::<TupleBody<_>>().unwrap();
+      assert_eq!(tuple, (123, 124));
+    }
 
-    // #[test]
-    // fn it_works_err() {
+    #[test]
+    fn test_error_body() {
 
-    //   let buf = [
-    //     206, 0, 0, 0, 147, // len
-    //     131, 0, 206, 0, 0, 128, 20, 1, 207, 0, 0, 0, 0, 0, 0, 0, 0, 5, 206, 0, 0, 0, 80, // header
-    //     130, 49, 189, 73, 110, 118, 97, 108, 105, 100, 32, 77, 115, 103, 80, 97, 99,
-    //     107, 32, 45, 32, 112, 97, 99, 107, 101, 116, 32, 98, 111, 100, 121, 82, 129,
-    //     0, 145, 134, 0, 171, 67, 108, 105, 101, 110, 116, 69, 114, 114, 111, 114, 2,
-    //     204, 216, 1, 217, 33, 47, 117, 115, 114, 47, 115, 114, 99, 47, 116, 97, 114,
-    //     97, 110, 116, 111, 111, 108, 47, 115, 114, 99, 47, 98, 111, 120, 47, 120, 114,
-    //     111, 119, 46, 99, 3, 189, 73, 110, 118, 97, 108, 105, 100, 32, 77, 115, 103,
-    //     80, 97, 99, 107, 32, 45, 32, 112, 97, 99, 107, 101, 116, 32, 98, 111, 100, 121, 4, 0, 5, 20,
-    //   ];
+      let buf = [
+        206, 0, 0, 0, 147, // len
+        131, 0, 206, 0, 0, 128, 20, 1, 207, 0, 0, 0, 0, 0, 0, 0, 0, 5, 206, 0, 0, 0, 80, // header
+        130, 49, 189, 73, 110, 118, 97, 108, 105, 100, 32, 77, 115, 103, 80, 97, 99,
+        107, 32, 45, 32, 112, 97, 99, 107, 101, 116, 32, 98, 111, 100, 121, 82, 129,
+        0, 145, 134, 0, 171, 67, 108, 105, 101, 110, 116, 69, 114, 114, 111, 114, 2,
+        204, 216, 1, 217, 33, 47, 117, 115, 114, 47, 115, 114, 99, 47, 116, 97, 114,
+        97, 110, 116, 111, 111, 108, 47, 115, 114, 99, 47, 98, 111, 120, 47, 120, 114,
+        111, 119, 46, 99, 3, 189, 73, 110, 118, 97, 108, 105, 100, 32, 77, 115, 103,
+        80, 97, 99, 107, 32, 45, 32, 112, 97, 99, 107, 101, 116, 32, 98, 111, 100, 121, 4, 0, 5, 20,
+      ];
 
-    //   let resp = Response::parse(&buf[..]).unwrap();
+      let resp = Response::parse(&buf[..]).unwrap();
 
-    //   assert!(dbg!(resp.header.code).is_err());
+      assert!(resp.header.code.is_err());
 
-    //   dbg!(resp.unpack_body::<ErrorBody>().unwrap());
-    // }
+      let err = resp.unpack_body::<ErrorBody>().unwrap();
+      assert_eq!(err.message, "Invalid MsgPack - packet body");
+      assert_eq!(err.stack.len(), 1);
+    }
 }

@@ -1,17 +1,17 @@
 use std::{
-  collections::HashMap, io::Cursor,
+  io::Cursor,
   sync::{Arc, atomic::{AtomicBool, Ordering}},
 };
 
 use tokio::{
   io::{AsyncReadExt, AsyncWriteExt},
   net::{TcpStream, tcp::{OwnedReadHalf, OwnedWriteHalf}},
-  sync::{Mutex, mpsc, oneshot},
+  sync::mpsc,
 };
 
 use crate::iproto::{request::Request, response::Response};
 
-use super::connector::Connector;
+use super::{connection::RespChans, connector::Connector};
 
 
 
@@ -20,9 +20,7 @@ pub(crate) struct ConnectionServer {
 
   pub(crate) req_chan_reader: mpsc::Receiver<Request>,
 
-  pub(crate) resp_chans: Arc<Mutex<
-    HashMap<u64, oneshot::Sender<Response>>
-  >>,
+  pub(crate) resp_chans: RespChans,
 
   pub(crate) closed: Arc<AtomicBool>,
 }
@@ -81,9 +79,7 @@ impl ConnectionServer {
 
   async fn reader(
     mut read: OwnedReadHalf,
-    resp_chans: Arc<Mutex<
-      HashMap<u64, oneshot::Sender<Response>>
-    >>,
+    resp_chans: RespChans,
     closed: Arc<AtomicBool>,
   ) {
     let mut buf = [0; 9];
@@ -127,10 +123,7 @@ impl ConnectionServer {
         },
       };
 
-      if let Some(resp_chan) = resp_chans
-        .lock().await
-        .remove(&resp.header.sync) {
-
+      if let Some((_, resp_chan)) = resp_chans.remove(&resp.header.sync) {
         if resp_chan.is_closed() { continue; }
         let _ = resp_chan.send(resp);
       }
