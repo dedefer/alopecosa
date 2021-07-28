@@ -1,5 +1,6 @@
 ![MIT licensed](https://img.shields.io/github/license/dedefer/alopecosa?style=for-the-badge)
 [![Version](https://img.shields.io/crates/v/alopecosa?style=for-the-badge)](https://crates.io/crates/alopecosa/)
+![Code Coverage](https://img.shields.io/coveralls/github/dedefer/alopecosa/main?style=for-the-badge)
 ![Downloads](https://img.shields.io/crates/d/alopecosa?style=for-the-badge)
 
 # Alopecosa

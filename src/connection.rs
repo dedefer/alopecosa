@@ -197,7 +197,7 @@ impl Drop for Connection {
 mod tests {
   use std::{sync::Arc, time::Duration};
 
-  use crate::{Connector, IntoTuple, iproto::{
+  use crate::{Connector, IntoTuple, Value, iproto::{
     constants::{Field, Iterator},
     request::{
       Call, Delete, Eval, Execute,
@@ -266,6 +266,9 @@ mod tests {
     }).await.expect("bad query");
     assert_eq!(res, 5);
 
+    conn.ping()
+      .await.expect("bad query");
+
     if conn.tarantool_version().starts_with("1.") {
       println!(
         "skip tests of sql binary protocol due to version({}) < 2",
@@ -276,7 +279,7 @@ mod tests {
     }
 
     let res = conn.prepare(
-      Prepare::SQL("VALUES (?, ?);".into())
+      Prepare::SQL("VALUES (?, ?, ?, ?, ?, ?);".into())
     ).await.expect("bad query");
     assert!(res[&Field::StmtID].is_i64());
 
@@ -284,15 +287,19 @@ mod tests {
 
     let res = conn.execute(Execute {
       expr: Prepare::StatementID(stmt),
-      sql_bind: ( 1, 2 ).into_tuple(),
+      sql_bind: ( 1, "123", 1.0f32, 1.0f64, true, Value::Null ).into_tuple(),
       options: ().into_tuple(),
     }).await.expect("bad query");
     let tuple = &res[&Field::Data][0];
     let tuple = (
       tuple[0].as_u64().unwrap(),
-      tuple[1].as_u64().unwrap(),
+      tuple[1].as_str().unwrap(),
+      tuple[2].as_f64().unwrap(),
+      tuple[3].as_f64().unwrap(),
+      tuple[4].as_bool().unwrap(),
+      tuple[5].is_nil(),
     );
-    assert_eq!(tuple, (1, 2));
+    assert_eq!(tuple, (1, "123", 1.0, 1.0, true, true));
   }
 
   #[tokio::test]
@@ -379,6 +386,7 @@ mod tests {
     let addr = "127.0.0.1:3301".parse().unwrap();
 
     let conn = Connector::new(addr)
+      .with_send_request_timeout(Duration::from_secs(5))
       .with_connect_timeout(Duration::from_secs(1))
       .with_reconnect_interval(Duration::from_secs(1))
       .connect().await.unwrap();
@@ -396,6 +404,10 @@ mod tests {
         let _ = dbg!(res);
       }
     }
+
+    drop(conn);
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
   }
 
 }
