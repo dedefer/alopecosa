@@ -92,7 +92,7 @@ impl Request {
 }
 
 /// This represents header of request.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Header {
   pub request: RequestType,
   pub sync: u64,
@@ -549,7 +549,7 @@ impl Body for Call {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Auth {
   pub user: String,
   pub scramble: Vec<u8>,
@@ -579,7 +579,7 @@ impl Body for Auth {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Insert {
   pub space_id: u64,
   pub tuple: Vec<Value>,
@@ -609,7 +609,7 @@ impl Body for Insert {
 #[allow(dead_code)]
 pub type Replace = Insert;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Update {
   pub space_id: u64,
   pub index_id: u64,
@@ -649,7 +649,7 @@ impl Body for Update {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Delete {
   pub space_id: u64,
   pub index_id: u64,
@@ -679,7 +679,7 @@ impl Body for Delete {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Eval {
   pub expr: String,
   pub args: Vec<Value>,
@@ -707,7 +707,7 @@ impl Body for Eval {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Upsert {
   pub space_id: u64,
   pub index_base: u64,
@@ -747,7 +747,7 @@ impl Body for Upsert {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Ping;
 
 impl Body for Ping {
@@ -758,7 +758,7 @@ impl Body for Ping {
 
 
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Prepare {
   StatementID(i64),
   SQL(String),
@@ -804,7 +804,7 @@ impl Body for Prepare {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Execute {
   pub expr: Prepare,
   pub sql_bind: Vec<Value>,

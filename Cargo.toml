@@ -1,15 +1,15 @@
 [package]
 name = "alopecosa"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["dedefer <ddf1998@gmail.com>"]
 edition = "2018"
 readme = "README.md"
-license-file = "LICENSE"
+license = "MIT"
 keywords = ["async", "tokio", "tarantool", "connector"]
 categories = ["asynchronous", "concurrency", "database"]
 repository = "https://github.com/dedefer/alopecosa"
 homepage = "https://github.com/dedefer/alopecosa"
-description = "Pure rust async Tarantool 1.6 connector built on tokio"
+description = "Pure rust async Tarantool 1.6+ connector built on tokio"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

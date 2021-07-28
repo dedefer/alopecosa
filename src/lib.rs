@@ -5,7 +5,9 @@
 
 # Alopecosa
 
-Alopecosa is a convenient async pure-rust [Tarantool 1.6+](www.tarantool.io) connector built on tokio (version 1).
+Alopecosa is a convenient async pure-rust [Tarantool 1.6+](https://www.tarantool.io) connector built on tokio (version 1).
+
+By the way, [alopecosa](https://en.wikipedia.org/wiki/Alopecosa) is the kind of tarantula that inhabits in Japan.
 
 [Documentation link](https://docs.rs/alopecosa/)
 
@@ -14,18 +16,6 @@ Alopecosa is a convenient async pure-rust [Tarantool 1.6+](www.tarantool.io) con
 ## Example
 
 ```rust
-use std::{
-    error::Error,
-    time::Duration,
-    sync::Arc,
-};
-use alopecosa::{
-    Connection, Connector,
-    IntoTuple,
-};
-use tokio::time::timeout;
-
-#[tokio::main]
 use std::{
   error::Error,
   time::Duration,
@@ -87,6 +77,7 @@ let conn: Arc<Connection> = Connector::new(addr)
   .with_send_request_timeout(Duration::from_secs(10))
   .connect().await?;
 ```
+
 */
 
 pub mod iproto;

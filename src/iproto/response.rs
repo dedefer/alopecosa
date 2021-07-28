@@ -16,7 +16,7 @@ use rmpv::{Value, decode::read_value};
 use serde::de::DeserializeOwned;
 
 /// This is representation of tarantool response.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Response {
   pub header: Header,
   pub body: Option<Vec<u8>>,
@@ -61,7 +61,7 @@ impl Response {
 }
 
 /// Representation of response header.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Header {
   pub code: Code,
   pub sync: u64,
@@ -109,7 +109,7 @@ pub trait BodyDecoder {
   fn unpack(body: &[u8]) -> Result<Self::Result, Error>;
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct StackRecord {
   pub err_type: String,
   pub file: String,
@@ -121,7 +121,7 @@ pub struct StackRecord {
 
 
 /// This is representation of error returned from tarantool.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TarantoolError {
   pub message: String,
   pub stack: Vec<StackRecord>,
