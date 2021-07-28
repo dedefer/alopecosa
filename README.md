@@ -4,7 +4,9 @@
 
 # Alopecosa
 
-Alopecosa is a convenient async pure-rust [Tarantool 1.6+](www.tarantool.io) connector built on tokio (version 1).
+Alopecosa is a convenient async pure-rust [Tarantool 1.6+](https://www.tarantool.io) connector built on tokio (version 1).
+
+By the way, [alopecosa](https://en.wikipedia.org/wiki/Alopecosa) is the kind of tarantula that inhabits in Japan.
 
 [Documentation link](https://docs.rs/alopecosa/)
 
