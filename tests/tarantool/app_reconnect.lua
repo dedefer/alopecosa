@@ -1,11 +1,12 @@
 ffi = require('ffi')
 
 ffi.cdef[[
-  void close(int)
+  int shutdown(int, int);
 ]]
 
 function self_close()
-  ffi.C.close(box.session.fd())
+  local SHUT_RDWR = 2
+  ffi.C.shutdown(box.session.fd(), SHUT_RDWR)
 end
 
 box.cfg{listen=3301}
