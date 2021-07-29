@@ -383,7 +383,8 @@ mod tests {
 
   #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
   async fn test_tnt_reconnect() {
-    let addr = "127.0.0.1:3301".parse().unwrap();
+
+    let addr = "127.0.0.1:3302".parse().unwrap();
 
     let conn = Connector::new(addr)
       .with_send_request_timeout(Duration::from_secs(5))
@@ -391,19 +392,29 @@ mod tests {
       .with_reconnect_interval(Duration::from_secs(1))
       .connect().await.unwrap();
 
-    for _ in 0..10_000u32 {
-      let res = tokio::time::timeout(
-        Duration::from_secs(1),
-        conn.eval::<(u32, u32)>(Eval {
-          expr: "return 1, 1".into(),
-          args: ().into_tuple(),
-        })
-      ).await;
+    let res = tokio::time::timeout(
+      Duration::from_secs(1), conn.eval::<(u32, u32)>(Eval {
+      expr: "return 1, 1".into(),
+      args: ().into_tuple(),
+    })).await.unwrap().unwrap();
 
-      if res.is_err() {
-        let _ = dbg!(res);
-      }
-    }
+    assert_eq!(res, (1, 1));
+
+    let res = tokio::time::timeout(
+      Duration::from_secs(1), conn.call::<()>(Call {
+      function: "self_close".into(),
+      args: ().into_tuple(),
+    })).await;
+
+    assert!(res.is_err());
+
+    let res = tokio::time::timeout(
+      Duration::from_secs(2), conn.eval::<(u32, u32)>(Eval {
+      expr: "return 1, 1".into(),
+      args: ().into_tuple(),
+    })).await.unwrap().unwrap();
+
+    assert_eq!(res, (1, 1));
 
     drop(conn);
 

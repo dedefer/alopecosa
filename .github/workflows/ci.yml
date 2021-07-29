@@ -16,6 +16,11 @@ jobs:
           image: tarantool/tarantool:2
           params: -d -p 3301:3301
           command: tarantool tests/tarantool/app.lua
+      - uses: mosteo-actions/docker-run@v1
+        with:
+          image: tarantool/tarantool:2
+          params: -d -p 3302:3301
+          command: tarantool tests/tarantool/app_reconnect.lua
       - uses: actions-rs/cargo@v1
         with:
           command: test
