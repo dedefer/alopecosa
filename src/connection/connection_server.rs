@@ -1,10 +1,6 @@
 use std::{io::Cursor, net::SocketAddr, sync::{Arc, atomic::{AtomicBool, Ordering}}};
 
-use tokio::{
-  io::{AsyncReadExt, AsyncWriteExt},
-  net::{TcpStream, tcp::{OwnedReadHalf, OwnedWriteHalf}},
-  sync::mpsc,
-};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpStream, tcp::{OwnedReadHalf, OwnedWriteHalf}}, sync::mpsc};
 
 use crate::iproto::{request::Request, response::Response};
 
@@ -122,6 +118,16 @@ impl ConnectionServer {
     const REQUEST_LEN_LEN: usize = 9;
     let mut buf = [0; REQUEST_LEN_LEN];
     let mut req_buf: Vec<u8> = Vec::new();
+
+    { // drop closed channels after reconnect, preventing memory leak
+      let closed_resp_chans: Vec<_> = resp_chans.iter()
+        .filter(|v| v.is_closed())
+        .map(|pair| *pair.key())
+        .collect();
+
+      closed_resp_chans.iter()
+        .for_each(|sync| { resp_chans.remove(sync); });
+    }
 
     while !closed.load(Ordering::SeqCst) {
       req_buf.clear();

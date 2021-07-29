@@ -181,6 +181,8 @@ impl Connection {
       log::error!("sync seems to be overflowed with {}", req.header.sync);
     }
 
+
+
     let _ = self.req_chan_sender.send(req).await;
 
     receiver.await.unwrap()
