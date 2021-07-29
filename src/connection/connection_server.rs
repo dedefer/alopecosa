@@ -95,6 +95,13 @@ impl ConnectionServer {
         },
       };
 
+      if let Some(true) = self.resp_chans.get(&req.header.sync)
+        .map(|resp_chan| resp_chan.is_closed()) {
+        // won't send canceled requests
+        self.resp_chans.remove(&req.header.sync);
+        continue;
+      }
+
       if let Err(err) = req.pack(&mut write_buf) {
         log::error!(
           "[{}] error while packing request err: {}, req: {:?}",
