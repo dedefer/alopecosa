@@ -69,3 +69,35 @@ impl From<ValueWriteError> for Error {
       Error::PackError(err)
   }
 }
+
+
+#[cfg(test)]
+mod test {
+  use super::*;
+
+  #[test]
+  fn test_display() {
+    let err = Error::ParseError(
+      rmp_serde::decode::Error::DepthLimitExceeded
+    );
+    assert_eq!(err.to_string(), "depth limit exceeded");
+
+    let err: Error = ValueWriteError::InvalidDataWrite(std::io::Error::new(
+      std::io::ErrorKind::Other,
+      "some error",
+    )).into();
+    assert!(err.to_string().contains("error while writing"));
+
+    let err: Error = Error::UnexpectedField(123);
+    assert!(err.to_string().contains("unexpected field"));
+
+    let err: Error = Error::UnexpectedValue(Field::Data);
+    assert!(err.to_string().contains("unexpected value for field"));
+
+    let err: Error = Error::TarantoolError(Code::ErrorAccessDenied, TarantoolError{
+        message: "error".into(),
+        stack: Vec::new(),
+    });
+    assert!(err.to_string().contains("ErrorAccessDenied"));
+  }
+}
