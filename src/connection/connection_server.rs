@@ -23,6 +23,8 @@ impl ConnectionServer {
     let mut stream = Some(stream);
 
     while !self.closed.load(Ordering::SeqCst) {
+      self.cleanup_after_reconnection();
+
       if let Err(err) = self.serve(stream).await {
         if let Some(interval) = self.connector.reconnect_interval {
           log::error!(
@@ -39,6 +41,16 @@ impl ConnectionServer {
       }
       stream = None;
     }
+  }
+
+  fn cleanup_after_reconnection(&self) {
+    let closed_resp_chans: Vec<_> = self.resp_chans.iter()
+      .filter(|v| v.is_closed())
+      .map(|pair| *pair.key())
+      .collect();
+
+    closed_resp_chans.iter()
+      .for_each(|sync| { self.resp_chans.remove(sync); });
   }
 
   async fn serve(&mut self, stream: Option<TcpStream>) -> Result<(), std::io::Error> {
@@ -118,16 +130,6 @@ impl ConnectionServer {
     const REQUEST_LEN_LEN: usize = 9;
     let mut buf = [0; REQUEST_LEN_LEN];
     let mut req_buf: Vec<u8> = Vec::new();
-
-    { // drop closed channels after reconnect, preventing memory leak
-      let closed_resp_chans: Vec<_> = resp_chans.iter()
-        .filter(|v| v.is_closed())
-        .map(|pair| *pair.key())
-        .collect();
-
-      closed_resp_chans.iter()
-        .for_each(|sync| { resp_chans.remove(sync); });
-    }
 
     while !closed.load(Ordering::SeqCst) {
       req_buf.clear();
